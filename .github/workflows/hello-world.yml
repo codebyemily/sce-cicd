@@ -1,17 +1,16 @@
 name: hello-world
-on: 
-  push
+on:
+  push:
 
 jobs:
   my-job:
     runs-on: ubuntu-latest
     steps:
-      - name: my-step
-        run: echo "Hello World!"
+      - name: Failing step
+        run: exit 1  
+
   another-job:
     runs-on: ubuntu-latest
     steps:
-      - name: my-step
-        run: echo "second job"
-
-
+      - name: Second step
+        run: echo "This job runs but overall workflow will fail"
