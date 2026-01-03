@@ -1,5 +1,11 @@
 name: hello-world
-on: push
+on: 
+    push: {}
+    workflow_job:
+      types: [completed]
+    workflow_run:
+      types: [completed]
+
 jobs:
   my-job:
     runs-on: ubuntu-latest
