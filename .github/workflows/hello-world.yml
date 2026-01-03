@@ -1,9 +1,6 @@
 name: hello-world
 on: 
-    workflow_job:
-      types: [completed]
-    workflow_run:
-      types: [completed]
+  push
 
 jobs:
   my-job:
