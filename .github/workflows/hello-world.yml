@@ -1,6 +1,5 @@
 name: hello-world
 on: 
-    push: {}
     workflow_job:
       types: [completed]
     workflow_run:
