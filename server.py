@@ -444,9 +444,6 @@ def get_metrics():
 def health():
     return {"status": "ok", "dev_mode": args.development}
 
-def check_actions_passed():
-    pass
-
 def start_smee():
     url = os.getenv("SMEE_URL")
     if not url:
