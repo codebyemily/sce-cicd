@@ -1,8 +1,6 @@
 name: hello-world
 on: 
   push
-  
-actions_need_to_pass: true
 
 jobs:
   my-job:
@@ -14,6 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: my-step
-        run: echo "secondd job"
+        run: echo "second job"
 
 
