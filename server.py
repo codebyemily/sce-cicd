@@ -44,6 +44,7 @@ class RepoConfig:
     # makes sure theres a new list made for each repotowatch object
     containers_to_force_recreate: List[str] = dataclasses.field(default_factory=list)
     docker_ignore: List[str] = dataclasses.field(default_factory=list)
+    actions_need_to_pass: bool = False
 
 
 @dataclasses.dataclass
@@ -370,8 +371,21 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     MetricsHandler.last_smee_request_timestamp.set(time.time())
 
     event = request.headers.get("X-GitHub-Event")
+    if event == "workflow_run":
+        workflow_run = payload.get("workflow_run", {})
+        status = workflow_run.get("status")
+        conclusion = workflow_run.get("conclusion")
+        branch = workflow_run.get("head_branch")
+
+        if status == "completed" and conclusion == "success": 
+            actions_need_to_pass = True
+        else: 
+            return {
+                "status": f"Committed changes did not pass requirements. Status: {status}"
+            }
+
     if event != "push":
-        return {"status": "ignored", "reason": f"Event {event} is not 'push'"}
+        return {"status": "ignored", "reason": f"X-GitHub-Event header was not set to a valid event, got value {event}"}
 
     payload = await request.json()
     branch = payload.get("ref", "").split("/")[-1]
@@ -430,6 +444,8 @@ def get_metrics():
 def health():
     return {"status": "ok", "dev_mode": args.development}
 
+def check_actions_passed():
+    pass
 
 def start_smee():
     url = os.getenv("SMEE_URL")
