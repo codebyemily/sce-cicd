@@ -1,0 +1,7 @@
+repos:
+  - name: git-workshop
+    branch: main
+    path: /home/sce/git-workshop
+  - name: monitoring
+    branch: main
+    path: /home/sce/monitoring
