@@ -369,6 +369,7 @@ except Exception:
 @app.post("/webhook")
 async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     MetricsHandler.last_smee_request_timestamp.set(time.time())
+    payload = await request.json()
 
     event = request.headers.get("X-GitHub-Event")
     if event == "workflow_run":
