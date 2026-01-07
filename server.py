@@ -406,7 +406,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
             return {
                 "status": f"Committed changes did not pass requirements. Status: {status}"
             }
-<<<<<<< HEAD
 
     if event != "push":
         return {"status": "ignored", "reason": f"X-GitHub-Event header was not set to a valid event, got value {event}"}
@@ -414,18 +413,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
     branch = payload.get("ref", "").split("/")[-1]
     repo_name = payload.get("repository", {}).get("name")
-=======
-    else: 
-        return {
-            "status": f"X-GitHub-Event header was not set to a valid event, got value {event_header}"
-        }
-
-    actions_need_to_pass = True
-    pending_commits[repo_name].discard(head_sha)
-    
-    ref = payload.get("ref", "")
-    branch = ref.split("/")[-1]
->>>>>>> e30d86b (testing, not done yet)
     key = (repo_name, branch)
 
     # Resolve target config
