@@ -371,6 +371,53 @@ try:
 except Exception:
     logger.exception(f"Failed to load config at path {args.config}")
 
+def handle_workflow_run(payload, repo_name):
+    workflow_run = payload.get("workflow_run", {})
+    status = workflow_run.get("status")
+    conclusion = workflow_run.get("conclusion")
+    head_commit = workflow_run.get("head_commit", {}).get("id")
+    branch = workflow_run.get("head_branch")
+
+    if head_commit not in pending_commits.get(repo_name, set()):
+        return {
+            "status": f"Not in pending_commits"
+        } 
+    
+    if status != "completed" or conclusion != "success": 
+        return {
+            "status": f"Committed changes did not pass requirements. Status: {status}"
+        }
+    
+    actions_need_to_pass = True
+    commits = pending_commits.get(repo_name)
+    if commits:
+        pending_commits[repo_name].discard(head_commit)
+    
+    # check for any empty repos
+    if not commits:
+        pending_commits.pop(repo_name)
+    
+    ref = payload.get("ref", "")
+    branch = ref.split("/")[-1]
+    key = (repo_name, branch)
+
+    if args.development and key not in config:
+        # if we are in development mode, pretend that
+        # we wanted to watch this repo no matter what
+        config[key] = RepoToWatch(name=repo_name, branch=branch, path="/dev/null", actions_need_to_pass=actions_need_to_pass)
+
+    if key not in config:
+        logging.warning(f"not acting on repo and branch name of {key}")
+        return {"status": f"not acting on repo and branch name of {key}"}
+    
+    logger.info(f"Push to {branch} detected for {repo_name}")
+    # update the repo
+    thread = threading.Thread(target=update_repo, args=(config[key],))
+    thread.start()
+
+    return {"status": "webhook received"}
+
+
 
 @app.post("/webhook")
 async def github_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -382,72 +429,21 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
 
     actions_need_to_pass = False
     repo_name = payload.get("repository", {}).get("name")
+    
+    if (not repo_name):
+        return {"status": "missing repo name"}
+
     if event_header == "push":
         pending_commits[repo_name].add(head_sha)
         logger.info(f"Stored {head_sha} for {repo_name}")
         return {
             "status": f"commit recorded"
         }
-    elif event_header == "workflow_run":
-        workflow_run = payload.get("workflow_run", {})
-        status = workflow_run.get("status")
-        conclusion = workflow_run.get("conclusion")
-        head_sha = payload.get("head_sha", {}).get("id")
-
-        if not head_sha or not repo_name:
-            return {"status": "missing head_sha or repo name"}
     
-        if head_sha not in pending_commits:
-            return {
-                "status": f"Not in pending_commits"
-            } 
+    elif event_header == "workflow_run":
+        handle_workflow_run(payload, repo_name)
         
-        if status != "completed" or conclusion != "success": 
-            return {
-                "status": f"Committed changes did not pass requirements. Status: {status}"
-            }
-
-    if event != "push":
-        return {"status": "ignored", "reason": f"X-GitHub-Event header was not set to a valid event, got value {event}"}
-
-    payload = await request.json()
-    branch = payload.get("ref", "").split("/")[-1]
-    repo_name = payload.get("repository", {}).get("name")
-    key = (repo_name, branch)
-
-    # Resolve target config
-    target = REPO_MAP.get(key)
-    if not target:
-        logger.warning(f"No configuration found for {repo_name}:{branch}")
-        return {"status": "ignored", "reason": "Repository/Branch not tracked"}
-
-    if not args.development:
-        current_branch_result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            cwd=target.path,
-            capture_output=True,
-            text=True,
-        )
-        current_branch = current_branch_result.stdout.strip()
-
-        if current_branch != branch:
-            logger.warning(f"Branch mismatch for {repo_name}")
-            # Update the call to pass both branches
-            push_skipped_update_as_discord_embed_mismatched_branch(target, branch, current_branch)
-            return {"status": "skipped", "reason": "branch mismatch"}
-
-    # 1. Extract changed files from the payload
-    head_commit = payload.get("head_commit") or {}
-    files_changed = (
-        head_commit.get("added", []) + 
-        head_commit.get("modified", []) + 
-        head_commit.get("removed", [])
-    )
-
-    # 2. Check if we should skip based on docker_ignore
-    if should_skip_deployment(files_changed, target.docker_ignore):
-        logger.info(f"Skipping deployment for {repo_name}: All files match docker_ignore.")
-        push_skipped_update_as_discord_embed_docker_ignore(target, files_changed)
+    else: 
         return {
             "status": "skipped", 
             "reason": "all changed files ignored by docker_ignore"
