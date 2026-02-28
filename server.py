@@ -19,11 +19,8 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from metrics import MetricsHandler
-<<<<<<< HEAD
-=======
 from collections import defaultdict
 
->>>>>>> e30d86b (testing, not done yet)
 from prometheus_client import generate_latest
 pending_commits = defaultdict(set)
 
