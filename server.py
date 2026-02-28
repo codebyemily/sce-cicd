@@ -1,4 +1,5 @@
 import argparse
+import collections
 import dataclasses
 import fnmatch
 import getpass
@@ -19,10 +20,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from metrics import MetricsHandler
-from collections import defaultdict
-
 from prometheus_client import generate_latest
-pending_commits = defaultdict(set)
 
 load_dotenv()
 
@@ -36,6 +34,8 @@ logging.getLogger("uvicorn.access").setLevel(logging.ERROR)
 logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
+
+pending_commits = collections.defaultdict(set)
 
 
 @dataclasses.dataclass
@@ -343,31 +343,6 @@ def should_skip_deployment(files_changed: List[str], ignore_patterns: List[str])
             
     return True
 
-
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-)
-
-args = get_args()
-REPO_MAP: Dict[Tuple[str, str], RepoConfig] = {}
-
-# dis one loads the config.yml file
-# turns it into a dictionary
-# result is the dictionary
-try:
-    if not args.development:
-        with open(args.config) as f:
-            raw_repos = yaml.safe_load(f).get("repos", [])
-            for r in raw_repos:
-                # make a new entry into the result dictionary
-                # the key is a tuple of the repo name and branch
-                # the value is a RepoToWatch object
-                cfg = RepoConfig(**r)
-                REPO_MAP[(cfg.name, cfg.branch)] = cfg
-except Exception:
-    logger.exception(f"Failed to load config at path {args.config}")
-
 def handle_workflow_run(payload, repo_name):
     workflow_run = payload.get("workflow_run", {})
     status = workflow_run.get("status")
@@ -415,32 +390,82 @@ def handle_workflow_run(payload, repo_name):
     return {"status": "webhook received"}
 
 
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+)
+
+args = get_args()
+REPO_MAP: Dict[Tuple[str, str], RepoConfig] = {}
+
+# dis one loads the config.yml file
+# turns it into a dictionary
+# result is the dictionary
+try:
+    if not args.development:
+        with open(args.config) as f:
+            raw_repos = yaml.safe_load(f).get("repos", [])
+            for r in raw_repos:
+                # make a new entry into the result dictionary
+                # the key is a tuple of the repo name and branch
+                # the value is a RepoToWatch object
+                cfg = RepoConfig(**r)
+                REPO_MAP[(cfg.name, cfg.branch)] = cfg
+except Exception:
+    logger.exception(f"Failed to load config at path {args.config}")
+
 
 @app.post("/webhook")
 async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     MetricsHandler.last_smee_request_timestamp.set(time.time())
-    payload_body = await request.body()
-    payload = json.loads(payload_body)
-    head_sha = payload.get("head_sha")
-    event_header = request.headers.get("X-GitHub-Event")
 
-    actions_need_to_pass = False
+    event = request.headers.get("X-GitHub-Event")
+
+    payload = await request.json()
+    branch = payload.get("ref", "").split("/")[-1]
     repo_name = payload.get("repository", {}).get("name")
-    
-    if (not repo_name):
-        return {"status": "missing repo name"}
+    key = (repo_name, branch)
 
-    if event_header == "push":
-        pending_commits[repo_name].add(head_sha)
-        logger.info(f"Stored {head_sha} for {repo_name}")
-        return {
-            "status": f"commit recorded"
-        }
-    
-    elif event_header == "workflow_run":
+    # Resolve target config
+    target = REPO_MAP.get(key)
+    if not target:
+        logger.warning(f"No configuration found for {repo_name}:{branch}")
+        return {"status": "ignored", "reason": "Repository/Branch not tracked"}
+
+    if event == "workflow_run":
         handle_workflow_run(payload, repo_name)
-        
-    else: 
+        return
+
+    if event != "push":
+        return {"status": "ignored", "reason": f"Nothing to do for X-GitHub-Event value {event}"}
+
+    if not args.development:
+        current_branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=target.path,
+            capture_output=True,
+            text=True,
+        )
+        current_branch = current_branch_result.stdout.strip()
+
+        if current_branch != branch:
+            logger.warning(f"Branch mismatch for {repo_name}")
+            # Update the call to pass both branches
+            push_skipped_update_as_discord_embed_mismatched_branch(target, branch, current_branch)
+            return {"status": "skipped", "reason": "branch mismatch"}
+
+    # 1. Extract changed files from the payload
+    head_commit = payload.get("head_commit") or {}
+    files_changed = (
+        head_commit.get("added", []) + 
+        head_commit.get("modified", []) + 
+        head_commit.get("removed", [])
+    )
+
+    # 2. Check if we should skip based on docker_ignore
+    if should_skip_deployment(files_changed, target.docker_ignore):
+        logger.info(f"Skipping deployment for {repo_name}: All files match docker_ignore.")
+        push_skipped_update_as_discord_embed_docker_ignore(target, files_changed)
         return {
             "status": "skipped", 
             "reason": "all changed files ignored by docker_ignore"
@@ -459,6 +484,7 @@ def get_metrics():
 @app.get("/")
 def health():
     return {"status": "ok", "dev_mode": args.development}
+
 
 def start_smee():
     url = os.getenv("SMEE_URL")
