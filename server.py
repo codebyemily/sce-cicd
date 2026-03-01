@@ -1,5 +1,4 @@
 import argparse
-import collections
 import dataclasses
 import fnmatch
 import getpass
@@ -35,8 +34,6 @@ logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 
-pending_commits = collections.defaultdict(set)
-
 
 @dataclasses.dataclass
 class RepoConfig:
@@ -47,7 +44,6 @@ class RepoConfig:
     # makes sure theres a new list made for each repotowatch object
     containers_to_force_recreate: List[str] = dataclasses.field(default_factory=list)
     docker_ignore: List[str] = dataclasses.field(default_factory=list)
-    actions_need_to_pass: bool = False
 
 
 @dataclasses.dataclass
@@ -343,52 +339,6 @@ def should_skip_deployment(files_changed: List[str], ignore_patterns: List[str])
             
     return True
 
-def handle_workflow_run(payload, repo_name):
-    workflow_run = payload.get("workflow_run", {})
-    status = workflow_run.get("status")
-    conclusion = workflow_run.get("conclusion")
-    head_commit = workflow_run.get("head_commit", {}).get("id")
-    branch = workflow_run.get("head_branch")
-
-    if head_commit not in pending_commits.get(repo_name, set()):
-        return {
-            "status": f"Not in pending_commits"
-        } 
-    
-    if status != "completed" or conclusion != "success": 
-        return {
-            "status": f"Committed changes did not pass requirements. Status: {status}"
-        }
-    
-    actions_need_to_pass = True
-    commits = pending_commits.get(repo_name)
-    if commits:
-        pending_commits[repo_name].discard(head_commit)
-    
-    # check for any empty repos
-    if not commits:
-        pending_commits.pop(repo_name)
-    
-    ref = payload.get("ref", "")
-    branch = ref.split("/")[-1]
-    key = (repo_name, branch)
-
-    if args.development and key not in config:
-        # if we are in development mode, pretend that
-        # we wanted to watch this repo no matter what
-        config[key] = RepoToWatch(name=repo_name, branch=branch, path="/dev/null", actions_need_to_pass=actions_need_to_pass)
-
-    if key not in config:
-        logging.warning(f"not acting on repo and branch name of {key}")
-        return {"status": f"not acting on repo and branch name of {key}"}
-    
-    logger.info(f"Push to {branch} detected for {repo_name}")
-    # update the repo
-    thread = threading.Thread(target=update_repo, args=(config[key],))
-    thread.start()
-
-    return {"status": "webhook received"}
-
 
 app = FastAPI()
 app.add_middleware(
@@ -420,6 +370,8 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     MetricsHandler.last_smee_request_timestamp.set(time.time())
 
     event = request.headers.get("X-GitHub-Event")
+    if event != "push":
+        return {"status": "ignored", "reason": f"Event {event} is not 'push'"}
 
     payload = await request.json()
     branch = payload.get("ref", "").split("/")[-1]
@@ -431,13 +383,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     if not target:
         logger.warning(f"No configuration found for {repo_name}:{branch}")
         return {"status": "ignored", "reason": "Repository/Branch not tracked"}
-
-    if event == "workflow_run":
-        handle_workflow_run(payload, repo_name)
-        return
-
-    if event != "push":
-        return {"status": "ignored", "reason": f"Nothing to do for X-GitHub-Event value {event}"}
 
     if not args.development:
         current_branch_result = subprocess.run(
