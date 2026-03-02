@@ -368,7 +368,7 @@ except Exception:
 
 async def handle_workflow_run_event(payload: dict, target: RepoConfig, background_tasks: BackgroundTasks):
     if not target.actions_need_to_pass:
-        return {"status": "ignored", "reason": "actions_need_to_pass is not set to True for this repo"}
+        return {"status": "ignored", "reason": f"actions_need_to_pass is not set to True for {target.name}:{target.branch}"}
 
     action = payload.get("action")
     run_data = payload.get("workflow_run", {})
